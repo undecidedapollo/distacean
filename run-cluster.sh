@@ -85,7 +85,7 @@ run_servers() {
     sleep 2
     echo ""
 
-    rpc 21001/init '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"]]'
+    # rpc 21001/init '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"]]'
 
     echo ""
     echo "Cluster initialized! Server 1 is now the leader."

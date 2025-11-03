@@ -1,23 +1,23 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use actix_web::Responder;
 use actix_web::get;
 use actix_web::post;
 use actix_web::web::Data;
 use actix_web::web::Json;
-use actix_web::Responder;
-use openraft::error::decompose::DecomposeResult;
-use openraft::error::Infallible;
 use openraft::BasicNode;
 use openraft::LogId;
 use openraft::RaftMetrics;
 use openraft::ReadPolicy;
+use openraft::error::Infallible;
+use openraft::error::decompose::DecomposeResult;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::app::App;
 use crate::NodeId;
 use crate::TypeConfig;
+use crate::app::App;
 
 /// Serializable representation of linearizer data for follower reads
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,27 +35,53 @@ pub struct LinearizerData {
 /// This should be done before adding a node as a member into the cluster
 /// (by calling `change-membership`)
 #[post("/add-learner")]
-pub async fn add_learner(app: Data<App>, req: Json<(NodeId, String)>) -> actix_web::Result<impl Responder> {
-    let node_id = req.0 .0;
-    let node = BasicNode { addr: req.0 .1.clone() };
-    let res = app.raft.add_learner(node_id, node, true).await.decompose().unwrap();
+pub async fn add_learner(
+    app: Data<App>,
+    req: Json<(NodeId, String)>,
+) -> actix_web::Result<impl Responder> {
+    let node_id = req.0.0;
+    let node = BasicNode {
+        addr: req.0.1.clone(),
+    };
+    let res = app
+        .raft
+        .add_learner(node_id, node, true)
+        .await
+        .decompose()
+        .unwrap();
     Ok(Json(res))
 }
 
 /// Changes specified learners to members, or remove members.
 #[post("/change-membership")]
-pub async fn change_membership(app: Data<App>, req: Json<BTreeSet<NodeId>>) -> actix_web::Result<impl Responder> {
-    let res = app.raft.change_membership(req.0, false).await.decompose().unwrap();
+pub async fn change_membership(
+    app: Data<App>,
+    req: Json<BTreeSet<NodeId>>,
+) -> actix_web::Result<impl Responder> {
+    let res = app
+        .raft
+        .change_membership(req.0, false)
+        .await
+        .decompose()
+        .unwrap();
     Ok(Json(res))
 }
 
 /// Initialize a single-node cluster if the `req` is empty vec.
 /// Otherwise initialize a cluster with the `req` specified vec of node-id and node-address
 #[post("/init")]
-pub async fn init(app: Data<App>, req: Json<Vec<(NodeId, String)>>) -> actix_web::Result<impl Responder> {
+pub async fn init(
+    app: Data<App>,
+    req: Json<Vec<(NodeId, String)>>,
+) -> actix_web::Result<impl Responder> {
     let mut nodes = BTreeMap::new();
     if req.0.is_empty() {
-        nodes.insert(app.id, BasicNode { addr: app.addr.clone() });
+        nodes.insert(
+            app.id,
+            BasicNode {
+                addr: app.addr.clone(),
+            },
+        );
     } else {
         for (id, addr) in req.0.into_iter() {
             nodes.insert(id, BasicNode { addr });
@@ -81,7 +107,12 @@ pub async fn metrics(app: Data<App>) -> actix_web::Result<impl Responder> {
 /// machine to catch up before performing a linearizable read.
 #[post("/get_linearizer")]
 pub async fn get_linearizer(app: Data<App>) -> actix_web::Result<impl Responder> {
-    let linearizer = app.raft.get_read_linearizer(ReadPolicy::ReadIndex).await.decompose().unwrap();
+    let linearizer = app
+        .raft
+        .get_read_linearizer(ReadPolicy::ReadIndex)
+        .await
+        .decompose()
+        .unwrap();
 
     let data = match linearizer {
         Ok(lin) => {

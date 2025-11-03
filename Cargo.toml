@@ -18,6 +18,7 @@ serde_json         = { version = "1.0.57" }
 tokio              = { version = "1.0", default-features = false, features = ["sync"] }
 tracing            = { version = "0.1.29" }
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }
+maplit = "1.0.2"
 
 [dev-dependencies]
 anyhow = { version = "1.0.63" }
