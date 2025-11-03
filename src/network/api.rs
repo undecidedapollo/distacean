@@ -1,6 +1,5 @@
 use crate::client_http::FollowerReadError;
 use actix_web::Responder;
-use actix_web::delete;
 use actix_web::post;
 use actix_web::web;
 use actix_web::web::Data;
@@ -38,15 +37,6 @@ pub async fn read(app: Data<App>, req: Json<String>) -> actix_web::Result<impl R
 
     let res: Result<String, Infallible> = Ok(value.unwrap_or_default());
     Ok(Json(res))
-}
-
-// Use path parameterized delete requests
-#[delete("/delete/{key}")]
-pub async fn delete(app: Data<App>, path: web::Path<String>) -> actix_web::Result<impl Responder> {
-    let key = path.into_inner();
-    let req = Request::Del { key };
-    let response = app.raft.client_write(req).await.decompose().unwrap();
-    Ok(Json(response))
 }
 
 #[post("/linearizable_read")]

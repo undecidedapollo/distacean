@@ -31,8 +31,7 @@ rpc() {
         fi
     } | {
         if type jq > /dev/null 2>&1; then
-        # JQ might fail if the output is not valid JSON, resort to cat in that case
-            jq -R '. as $line | try (fromjson) catch $line'
+            jq
         else
             cat
         fi
@@ -51,7 +50,7 @@ kill
 
 sleep 1
 
-echo "Start 3 uninitialized hastacian2 servers..."
+echo "Start 5 uninitialized hastacian2 servers..."
 
 nohup ./target/debug/hastacian2  --id 1 --http-addr 127.0.0.1:21001 > n1.log &
 sleep 1
@@ -64,6 +63,16 @@ echo "Server 2 started"
 nohup ./target/debug/hastacian2  --id 3 --http-addr 127.0.0.1:21003 > n3.log &
 sleep 1
 echo "Server 3 started"
+sleep 1
+
+nohup ./target/debug/hastacian2  --id 4 --http-addr 127.0.0.1:21004 > n4.log &
+sleep 1
+echo "Server 4 started"
+sleep 1
+
+nohup ./target/debug/hastacian2  --id 5 --http-addr 127.0.0.1:21005 > n5.log &
+sleep 1
+echo "Server 5 started"
 sleep 1
 
 echo "Initialize servers 1,2,3 as a 3-nodes cluster"
@@ -83,6 +92,37 @@ echo
 rpc 21001/metrics
 sleep 1
 
+
+echo "Adding node 4 and node 5 as learners, to receive log from leader node 1"
+
+sleep 1
+echo
+rpc 21001/add-learner       '[4, "127.0.0.1:21004"]'
+echo "Node 4 added as learner"
+sleep 1
+echo
+rpc 21001/add-learner       '[5, "127.0.0.1:21005"]'
+echo "Node 5 added as learner"
+sleep 1
+
+echo "Get metrics from the leader, after adding 2 learners"
+sleep 2
+echo
+rpc 21001/metrics
+sleep 1
+
+echo "Changing membership from [1, 2, 3] to 5 nodes cluster: [1, 2, 3, 4, 5]"
+echo
+rpc 21001/change-membership '[1, 2, 3, 4, 5]'
+sleep 1
+echo 'Membership changed to [1, 2, 3, 4, 5]'
+sleep 1
+
+echo "Get metrics from the leader again"
+sleep 1
+echo
+rpc 21001/metrics
+sleep 1
 
 echo "Write data on leader"
 sleep 1
@@ -105,17 +145,35 @@ echo
 rpc 21003/read  '"foo"'
 
 
+echo "Changing membership from [1,2,3, 4, 5] to [3]"
+echo
+rpc 21001/change-membership '[3]'
+sleep 1
+echo 'Membership changed to [3]'
+sleep 1
 
-echo "Deleting data on leader"
+echo "Get metrics from the node-3"
 sleep 1
 echo
-rpc 21001/write '{"Del":{"key":"foo"}}'
+rpc 21003/metrics
+sleep 1
 
-echo "Read on leader after deletion"
+
+echo "Write foo=zoo on node-3"
 sleep 1
 echo
-rpc 21001/read  '"foo"'
-
+rpc 21003/write '{"Set":{"key":"foo","value":"zoo"}}'
 sleep 1
+echo "Data written"
+sleep 1
+
+echo "Read foo=zoo from node-3"
+sleep 1
+echo "Read from node 3"
+echo
+rpc 21003/read  '"foo"'
+echo
+
+
 echo "Killing all nodes..."
 kill

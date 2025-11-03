@@ -11,8 +11,6 @@ use actix_web::HttpServer;
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
-use maplit::hashmap;
-use openraft::BasicNode;
 use openraft::Config;
 
 use crate::app::App;
@@ -66,13 +64,13 @@ pub async fn start_example_raft_node(node_id: NodeId, http_addr: String) -> std:
     .await
     .unwrap();
 
-    raft.initialize(hashmap! {
-        1_u64 => BasicNode { addr: "127.0.0.1:21001".to_owned() },
-        2_u64 => BasicNode { addr: "127.0.0.1:21002".to_owned() },
-        3_u64 => BasicNode { addr: "127.0.0.1:21003".to_owned() },
-    })
-    .await
-    .unwrap();
+    // raft.initialize(hashmap! {
+    //     1_u64 => BasicNode { addr: "127.0.0.1:21001".to_owned() },
+    //     2_u64 => BasicNode { addr: "127.0.0.1:21002".to_owned() },
+    //     3_u64 => BasicNode { addr: "127.0.0.1:21003".to_owned() },
+    // })
+    // .await
+    // .unwrap();
 
     // Create an application that will store all the instances created above, this will
     // later be used on the actix-web services.
@@ -109,7 +107,6 @@ pub async fn start_example_raft_node(node_id: NodeId, http_addr: String) -> std:
             // application API
             .service(api::write)
             .service(api::read)
-            .service(api::delete)
             .service(api::linearizable_read)
             .service(api::follower_read)
     });
