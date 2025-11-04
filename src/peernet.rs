@@ -222,8 +222,6 @@ impl StartableStream<TcpStream> for TcpStreamStarter {
                         if let Err(e) = stream.set_nodelay(true) {
                             eprintln!("nodelay: {e}");
                         }
-                        #[cfg(target_os = "linux")]
-                        let _ = stream.set_keepalive(Some(Duration::from_secs(30)));
                         return stream;
                     }
                     Err(_) => sleep(Duration::from_secs(5)).await,
