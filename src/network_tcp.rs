@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use openraft::{
     BasicNode, RaftNetwork, RaftNetworkFactory, RaftTypeConfig,
-    error::{InstallSnapshotError, RPCError, RaftError},
+    error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable},
     network::RPCOption,
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -83,7 +83,15 @@ where
     ) -> Result<AppendEntriesResponse<C>, RPCError<C, RaftError<C>>> {
         let bytes = bincode::serialize(&req).unwrap();
         let req_bytes = bincode::serialize(&RequestType::AppendEntriesRequest(bytes)).unwrap();
-        let res = self.inner.clone().req_response(req_bytes).await.unwrap();
+        let res = self
+            .inner
+            .clone()
+            .req_response(req_bytes)
+            .await
+            .map_err(|e| {
+                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+                RPCError::Unreachable(Unreachable::new(&io_err))
+            })?;
         let resp: Result<AppendEntriesResponse<C>, RaftError<C>> =
             bincode::deserialize(&res).unwrap();
         match resp {
@@ -102,7 +110,15 @@ where
     ) -> Result<InstallSnapshotResponse<C>, RPCError<C, RaftError<C, InstallSnapshotError>>> {
         let bytes = bincode::serialize(&req).unwrap();
         let req_bytes = bincode::serialize(&RequestType::InstallSnapshotRequest(bytes)).unwrap();
-        let res = self.inner.clone().req_response(req_bytes).await.unwrap();
+        let res = self
+            .inner
+            .clone()
+            .req_response(req_bytes)
+            .await
+            .map_err(|e| {
+                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+                RPCError::Unreachable(Unreachable::new(&io_err))
+            })?;
         let resp: Result<InstallSnapshotResponse<C>, RaftError<C, InstallSnapshotError>> =
             bincode::deserialize(&res).unwrap();
         match resp {
@@ -121,7 +137,15 @@ where
     ) -> Result<VoteResponse<C>, RPCError<C, RaftError<C>>> {
         let bytes = bincode::serialize(&req).unwrap();
         let req_bytes = bincode::serialize(&RequestType::VoteRequest(bytes)).unwrap();
-        let res = self.inner.clone().req_response(req_bytes).await.unwrap();
+        let res = self
+            .inner
+            .clone()
+            .req_response(req_bytes)
+            .await
+            .map_err(|e| {
+                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+                RPCError::Unreachable(Unreachable::new(&io_err))
+            })?;
         let resp: Result<VoteResponse<C>, RaftError<C>> = bincode::deserialize(&res).unwrap();
         match resp {
             Ok(x) => Ok(x),

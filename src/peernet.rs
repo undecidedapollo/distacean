@@ -269,7 +269,10 @@ where
         let mut stream_lock = self.write_stream.lock().await;
         if let Some(stream) = stream_lock.as_mut() {
             let msg = Message::Data { payload: data };
-            write_message(stream, &msg).await?;
+            if let Err(e) = write_message(stream, &msg).await {
+                stream_lock.take();
+                return Err(e);
+            }
             Ok(())
         } else {
             Err("No active connection".into())
@@ -290,7 +293,10 @@ where
 
         let mut stream_lock = self.write_stream.lock().await;
         if let Some(stream) = stream_lock.as_mut() {
-            write_message(stream, &msg).await?;
+            if let Err(e) = write_message(stream, &msg).await {
+                stream_lock.take();
+                return Err(e);
+            }
         } else {
             return Err("No active connection".into());
         }
@@ -309,7 +315,10 @@ where
 
         let mut stream_lock = self.write_stream.lock().await;
         if let Some(stream) = stream_lock.as_mut() {
-            write_message(stream, &msg).await?;
+            if let Err(e) = write_message(stream, &msg).await {
+                stream_lock.take();
+                return Err(e);
+            }
             Ok(())
         } else {
             Err("No active connection".into())
@@ -415,7 +424,7 @@ where
             let (read_half, write_half) = tokio::io::split(con.stream);
             self.write_stream.lock().await.replace(write_half);
 
-            let read_handle = {
+            let mut read_handle = {
                 let read_channel = self.read_channel.clone();
                 let local_port = self.local_port;
                 let peer_port = peer_port;
@@ -459,23 +468,40 @@ where
                 })
             };
 
-            if let Some(new_req) = signal_checker().await {
-                // New connection request received, close current connection
-                println!(
-                    "[{}] [X {}] Closing current connection due to new request",
-                    self.local_port, peer_port
-                );
-                read_handle.abort();
-                self.signal_tx
-                    .send(PeerConnectionSignal::ConRequest(new_req))
-                    .await
-                    .unwrap();
-                continue;
-            } else {
-                // Signal channel closed
-                eprintln!("[{}] Signal channel closed", self.local_port);
-                read_handle.abort();
-                return;
+            tokio::select! {
+                new_req = signal_checker() => {
+                    match new_req {
+                        Some(req) => {
+                            // New connection request received, close current connection
+                            println!(
+                                "[{}] [X {}] Closing current connection due to new request",
+                                self.local_port, peer_port
+                            );
+                            read_handle.abort();
+                            self.write_stream.lock().await.take();
+                            self.signal_tx
+                                .send(PeerConnectionSignal::ConRequest(req))
+                                .await
+                                .unwrap();
+                            continue;
+                        }
+                        None => {
+                            // Signal channel closed
+                            eprintln!("[{}] Signal channel closed", self.local_port);
+                            read_handle.abort();
+                            return;
+                        }
+                    }
+                }
+                _ = &mut read_handle => {
+                    // Read task finished (likely due to error), clear write stream and reconnect
+                    println!(
+                        "[{}] [X {}] Connection closed, reconnecting...",
+                        self.local_port, peer_port
+                    );
+                    self.write_stream.lock().await.take();
+                    continue;
+                }
             }
         }
     }
