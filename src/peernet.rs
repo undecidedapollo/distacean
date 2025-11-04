@@ -223,12 +223,7 @@ impl StartableStream<TcpStream> for TcpStreamStarter {
                             eprintln!("nodelay: {e}");
                         }
                         #[cfg(target_os = "linux")]
-                        {
-                            use socket2::{SockRef, TcpKeepalive};
-                            let sock = SockRef::from(&stream);
-                            let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
-                            let _ = sock.set_tcp_keepalive(&keepalive);
-                        }
+                        let _ = stream.set_keepalive(Some(Duration::from_secs(30)));
                         return stream;
                     }
                     Err(_) => sleep(Duration::from_secs(5)).await,
