@@ -1,26 +1,15 @@
-pub mod app;
-pub mod client_http;
 pub mod log_store;
 pub mod network;
-pub mod network_http;
 pub mod network_tcp;
 pub mod peernet;
 pub mod store;
 
 use std::sync::Arc;
 
-use actix_web::HttpServer;
-use actix_web::middleware;
-use actix_web::middleware::Logger;
-use actix_web::web::Data;
 use openraft::Config;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
-use crate::app::App;
-use crate::network::api;
-use crate::network::management;
-use crate::network::raft;
 use crate::network_tcp::RaftPeerManager;
 use crate::network_tcp::watch_peer_request;
 use crate::peernet::PeerManager;
@@ -69,7 +58,6 @@ pub async fn start_example_raft_node(
 
     // Create the network layer that will connect and communicate the raft instances and
     // will be used in conjunction with the store created above.
-    let _network = network_http::NetworkFactory {};
     let peer_manager = PeerManager::new(tcp_port, TcpStreamStarter {});
     let mut rc = peer_manager.clone().get_recv();
     let network = RaftPeerManager::new(peer_manager.clone());
@@ -110,48 +98,10 @@ pub async fn start_example_raft_node(
     // })
     // .await
     // .unwrap();
+    // Wait indefinitely.
+    futures::future::pending::<()>().await;
 
-    // Create an application that will store all the instances created above, this will
-    // later be used on the actix-web services.
-    let app_data = Data::new(App {
-        id: node_id,
-        addr: http_addr.clone(),
-        raft,
-        state_machine_store,
-    });
-
-    // Start the actix-web server.
-    let log_format = Arc::new(format!(
-        "[Node {}:{}] %a \"%r\" %s %b \"%{{User-Agent}}i\" %T",
-        node_id, tcp_port
-    ));
-
-    let server = HttpServer::new(move || {
-        let fmt = log_format.clone();
-        actix_web::App::new()
-            .wrap(Logger::new(fmt.as_str()))
-            .wrap(middleware::Compress::default())
-            .app_data(app_data.clone())
-            // raft internal RPC
-            .service(raft::append)
-            .service(raft::snapshot)
-            .service(raft::vote)
-            // admin API
-            .service(management::init)
-            .service(management::add_learner)
-            .service(management::change_membership)
-            .service(management::metrics)
-            .service(management::get_linearizer)
-            // application API
-            .service(api::write)
-            .service(api::read)
-            .service(api::linearizable_read)
-            .service(api::follower_read)
-    });
-
-    let x = server.bind(http_addr)?;
-
-    x.run().await
+    Ok(())
 }
 
 pub struct AutoAbort<T>(Option<tokio::task::JoinHandle<T>>);
