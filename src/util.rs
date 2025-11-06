@@ -13,6 +13,7 @@ impl<T> AutoAbort<T> {
         Self(Some(handle))
     }
 
+    #[allow(dead_code)]
     pub async fn join(mut self) -> Result<T, tokio::task::JoinError> {
         self.0.take().unwrap().await
     }

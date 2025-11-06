@@ -1,25 +1,12 @@
 use crate::util::AutoAbort;
-use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::{Duration, sleep};
-
-#[derive(Parser, Debug)]
-#[command(name = "distacean")]
-#[command(about = "Bidirectional TCP server with ping/pong")]
-struct Args {
-    #[arg(short, long)]
-    port: u16,
-
-    #[arg(short = 'P', long, value_delimiter = ',')]
-    peers: Vec<u16>,
-}
+use tokio::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Message {
@@ -40,7 +27,7 @@ async fn write_message<T: AsyncWriteExt + Unpin>(
     writer: &mut T,
     msg: &Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let bytes = bincode::serialize(msg)?;
+    let bytes = rmp_serde::to_vec(msg)?;
     let len = bytes.len() as u32;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&bytes).await?;
@@ -55,7 +42,7 @@ async fn read_message<T: AsyncReadExt + Unpin>(
     let len = u32::from_be_bytes(len_bytes) as usize;
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
-    let msg = bincode::deserialize(&buf)?;
+    let msg = rmp_serde::from_slice(&buf)?;
     Ok(msg)
 }
 
@@ -69,36 +56,6 @@ where
     TS: StartableStream<T> + Send + Sync + 'static,
 {
 }
-
-// #[tokio::main]
-// async fn main() {
-//     let args = Args::parse();
-//     let local_port = args.port;
-//     let peers = args.peers;
-
-//     println!("[{}] Starting server", local_port);
-
-//     // Spawn TCP listener
-//     let peer_manager_clone = peer_manager.clone();
-//     let listener_handle = tokio::spawn(async move {
-//         run_listener(peer_manager_clone).await;
-//     });
-
-//     // Spawn connectors for each peer
-//     // The tie-breaker in handle_connection will handle any race conditions
-//     for peer_port in peers {
-//         peer_manager.get_or_create_connection(peer_port).await;
-//     }
-
-//     // Wait for Ctrl+C
-//     println!("[{}] Press Ctrl+C to shutdown", local_port);
-//     tokio::select! {
-//         _ = tokio::signal::ctrl_c() => {
-//             println!("[{}] Shutting down gracefully...", local_port);
-//         }
-//         _ = listener_handle => {}
-//     }
-// }
 
 pub struct PeerManager<T: HStream, TS: HStartable<T>> {
     pub local_port: u16,
@@ -211,26 +168,6 @@ pub trait StartableStream<T: HStream> {
     fn connect(&self, addr: String) -> impl std::future::Future<Output = T> + Send;
 }
 
-pub struct TcpStreamStarter {}
-
-impl StartableStream<TcpStream> for TcpStreamStarter {
-    fn connect(&self, addr: String) -> impl std::future::Future<Output = TcpStream> + Send {
-        async move {
-            loop {
-                match TcpStream::connect(&addr).await {
-                    Ok(stream) => {
-                        if let Err(e) = stream.set_nodelay(true) {
-                            eprintln!("nodelay: {e}");
-                        }
-                        return stream;
-                    }
-                    Err(_) => sleep(Duration::from_secs(5)).await,
-                }
-            }
-        }
-    }
-}
-
 impl<T, TS> PeerConnection<T, TS>
 where
     T: HStream,
@@ -323,17 +260,20 @@ where
         }
     }
 
-    pub async fn req_response(
+    pub async fn req_res(
         self: Arc<Self>,
         data: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut rec = self.read_channel.subscribe();
         let req_id = self.send_request(data).await?;
         loop {
-            let msg = rec.recv().await?;
+            let msg = tokio::time::timeout(Duration::from_secs(10), rec.recv()).await?;
             match msg {
-                RecvMessage::Res { res_id, payload } if res_id == req_id => {
+                Ok(RecvMessage::Res { res_id, payload }) if res_id == req_id => {
                     return Ok(payload);
+                }
+                Err(e) => {
+                    return Err(format!("Receive error: {}", e).into());
                 }
                 _ => {
                     // Ignore other messages

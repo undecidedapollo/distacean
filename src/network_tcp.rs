@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use crate::protocol::RequestType;
+use crate::{peernet::StartableStream, protocol::RequestType};
 use openraft::{
     BasicNode, RaftNetwork, RaftNetworkFactory, RaftTypeConfig,
     error::{InstallSnapshotError, RPCError, RaftError, Unreachable},
@@ -13,12 +13,30 @@ use openraft::{
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite},
     net::TcpStream,
+    time::sleep,
 };
 
-use crate::{
-    Raft, TypeConfig,
-    peernet::{PeerConnection, PeerManager, RecvMessage, TcpStreamStarter},
-};
+use crate::peernet::{PeerConnection, PeerManager};
+
+pub struct TcpStreamStarter {}
+
+impl StartableStream<TcpStream> for TcpStreamStarter {
+    fn connect(&self, addr: String) -> impl std::future::Future<Output = TcpStream> + Send {
+        async move {
+            loop {
+                match TcpStream::connect(&addr).await {
+                    Ok(stream) => {
+                        if let Err(e) = stream.set_nodelay(true) {
+                            eprintln!("nodelay: {e}");
+                        }
+                        return stream;
+                    }
+                    Err(_) => sleep(Duration::from_secs(5)).await,
+                }
+            }
+        }
+    }
+}
 
 pub struct RaftPeerManager {
     inner: Arc<PeerManager<TcpStream, TcpStreamStarter>>,
@@ -59,6 +77,7 @@ pub struct RaftPeerNetwork<C>
 where
     C: RaftTypeConfig,
 {
+    #[allow(dead_code)]
     port: u16,
     target: C::NodeId,
     inner: Arc<PeerConnection<TcpStream, TcpStreamStarter>>,
@@ -74,19 +93,14 @@ where
         req: AppendEntriesRequest<C>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<C>, RPCError<C, RaftError<C>>> {
-        let bytes = bincode::serialize(&req).unwrap();
-        let req_bytes = bincode::serialize(&RequestType::AppendEntriesRequest(bytes)).unwrap();
-        let res = self
-            .inner
-            .clone()
-            .req_response(req_bytes)
-            .await
-            .map_err(|e| {
-                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
-                RPCError::Unreachable(Unreachable::new(&io_err))
-            })?;
+        let bytes = rmp_serde::to_vec(&req).unwrap();
+        let req_bytes = rmp_serde::to_vec(&RequestType::AppendEntriesRequest(bytes)).unwrap();
+        let res = self.inner.clone().req_res(req_bytes).await.map_err(|e| {
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+            RPCError::Unreachable(Unreachable::new(&io_err))
+        })?;
         let resp: Result<AppendEntriesResponse<C>, RaftError<C>> =
-            bincode::deserialize(&res).unwrap();
+            rmp_serde::from_slice(&res).unwrap();
         match resp {
             Ok(x) => Ok(x),
             Err(x) => Err(RPCError::RemoteError(openraft::error::RemoteError::new(
@@ -101,19 +115,14 @@ where
         req: InstallSnapshotRequest<C>,
         _option: RPCOption,
     ) -> Result<InstallSnapshotResponse<C>, RPCError<C, RaftError<C, InstallSnapshotError>>> {
-        let bytes = bincode::serialize(&req).unwrap();
-        let req_bytes = bincode::serialize(&RequestType::InstallSnapshotRequest(bytes)).unwrap();
-        let res = self
-            .inner
-            .clone()
-            .req_response(req_bytes)
-            .await
-            .map_err(|e| {
-                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
-                RPCError::Unreachable(Unreachable::new(&io_err))
-            })?;
+        let bytes = rmp_serde::to_vec(&req).unwrap();
+        let req_bytes = rmp_serde::to_vec(&RequestType::InstallSnapshotRequest(bytes)).unwrap();
+        let res = self.inner.clone().req_res(req_bytes).await.map_err(|e| {
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+            RPCError::Unreachable(Unreachable::new(&io_err))
+        })?;
         let resp: Result<InstallSnapshotResponse<C>, RaftError<C, InstallSnapshotError>> =
-            bincode::deserialize(&res).unwrap();
+            rmp_serde::from_slice(&res).unwrap();
         match resp {
             Ok(x) => Ok(x),
             Err(x) => Err(RPCError::RemoteError(openraft::error::RemoteError::new(
@@ -128,18 +137,13 @@ where
         req: VoteRequest<C>,
         _option: RPCOption,
     ) -> Result<VoteResponse<C>, RPCError<C, RaftError<C>>> {
-        let bytes = bincode::serialize(&req).unwrap();
-        let req_bytes = bincode::serialize(&RequestType::VoteRequest(bytes)).unwrap();
-        let res = self
-            .inner
-            .clone()
-            .req_response(req_bytes)
-            .await
-            .map_err(|e| {
-                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
-                RPCError::Unreachable(Unreachable::new(&io_err))
-            })?;
-        let resp: Result<VoteResponse<C>, RaftError<C>> = bincode::deserialize(&res).unwrap();
+        let bytes = rmp_serde::to_vec(&req).unwrap();
+        let req_bytes = rmp_serde::to_vec(&RequestType::VoteRequest(bytes)).unwrap();
+        let res = self.inner.clone().req_res(req_bytes).await.map_err(|e| {
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+            RPCError::Unreachable(Unreachable::new(&io_err))
+        })?;
+        let resp: Result<VoteResponse<C>, RaftError<C>> = rmp_serde::from_slice(&res).unwrap();
         match resp {
             Ok(x) => Ok(x),
             Err(x) => Err(RPCError::RemoteError(openraft::error::RemoteError::new(
@@ -148,76 +152,4 @@ where
             ))),
         }
     }
-}
-
-pub fn watch_peer_request(peer_con: Arc<PeerConnection<TcpStream, TcpStreamStarter>>, raft: Raft) {
-    let peer_clone = peer_con.clone();
-    let mut read_channel = peer_con.get_read_channel();
-    tokio::spawn(async move {
-        loop {
-            let msg = read_channel.recv().await.unwrap();
-            match msg {
-                RecvMessage::Req { req_id, payload } => {
-                    let request: RequestType = bincode::deserialize(&payload).unwrap();
-                    match request {
-                        RequestType::AppendEntriesRequest(bytes) => {
-                            let req: AppendEntriesRequest<TypeConfig> =
-                                bincode::deserialize(&bytes).unwrap();
-                            let res: Result<
-                                openraft::raft::AppendEntriesResponse<TypeConfig>,
-                                openraft::error::RaftError<TypeConfig>,
-                            > = raft.append_entries(req).await;
-                            let res_bytes = bincode::serialize(&res).unwrap();
-                            peer_clone
-                                .clone()
-                                .send_response(req_id, res_bytes)
-                                .await
-                                .unwrap();
-                        }
-                        RequestType::InstallSnapshotRequest(bytes) => {
-                            let req: InstallSnapshotRequest<TypeConfig> =
-                                bincode::deserialize(&bytes).unwrap();
-                            let res: Result<
-                                openraft::raft::InstallSnapshotResponse<TypeConfig>,
-                                openraft::error::RaftError<TypeConfig, InstallSnapshotError>,
-                            > = raft.install_snapshot(req).await;
-                            let res_bytes = bincode::serialize(&res).unwrap();
-                            peer_clone
-                                .clone()
-                                .send_response(req_id, res_bytes)
-                                .await
-                                .unwrap();
-                        }
-                        RequestType::VoteRequest(bytes) => {
-                            let req: VoteRequest<TypeConfig> =
-                                bincode::deserialize(&bytes).unwrap();
-                            let res: Result<
-                                openraft::raft::VoteResponse<TypeConfig>,
-                                openraft::error::RaftError<TypeConfig>,
-                            > = raft.vote(req).await;
-                            let res_bytes = bincode::serialize(&res).unwrap();
-                            peer_clone
-                                .clone()
-                                .send_response(req_id, res_bytes)
-                                .await
-                                .unwrap();
-                        }
-                        RequestType::AppRequest(app_req) => {
-                            let res = raft.client_write(app_req).await.unwrap();
-                            let res_bytes = bincode::serialize(&res).unwrap();
-                            peer_clone
-                                .clone()
-                                .send_response(req_id, res_bytes)
-                                .await
-                                .unwrap();
-                        }
-                    }
-                }
-                RecvMessage::Res { .. } => {}
-                RecvMessage::Data { .. } => {
-                    unimplemented!("handle data message");
-                }
-            }
-        }
-    });
 }

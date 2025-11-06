@@ -1,9 +1,10 @@
-pub mod memory;
-pub mod rocks;
-
-use serde::Deserialize;
-use serde::Serialize;
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+pub mod store;
+
+pub type NodeId = u64;
 
 /**
  * Here you will set the types of request that will interact with the raft nodes.
@@ -12,21 +13,38 @@ use std::fmt;
  * You will want to add any request that can write data in all nodes here.
  */
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum Request {
+pub struct Request {
+    pub client_id: NodeId,
+    pub seq_id: Option<u64>,
+    pub op: RequestOperation,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum RequestOperation {
+    KV(KVOperation),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum KVOperation {
     Set { key: String, value: String },
     Del { key: String },
 }
 
 impl fmt::Display for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Request::Set { key, value, .. } => {
-                write!(f, "Set {{ key: {}, value: {} }}", key, value)
+        let op_str = match &self.op {
+            RequestOperation::KV(KVOperation::Set { key, value, .. }) => {
+                format!("Set {{ key: {}, value: {} }}", key, value)
             }
-            Request::Del { key } => {
-                write!(f, "Del {{ key: {} }}", key)
+            RequestOperation::KV(KVOperation::Del { key }) => {
+                format!("Del {{ key: {} }}", key)
             }
-        }
+        };
+        write!(
+            f,
+            "Request {{ client_id: {}, seq_id: {:?}, op: {} }}",
+            self.client_id, self.seq_id, op_str
+        )
     }
 }
 
@@ -57,6 +75,33 @@ impl fmt::Display for Request {
  * providing strongly-typed responses for different client operations.
  */
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Response {
-    pub value: Option<String>,
+pub enum Response {
+    Empty,
+    Result {
+        client_id: NodeId,
+        seq_id: Option<u64>,
+        res: ResponseResult,
+    },
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ResponseResult {
+    Empty,
+    KV(KVResponse),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum KVResponse {
+    Set { prev_value: Option<String> },
+    Del { existed: bool },
+}
+
+openraft::declare_raft_types!(
+    /// Declare the type configuration for example K/V store.
+    pub TypeConfig:
+        D = Request,
+        R = Response,
+);
+
+pub type StateMachineStore = store::RocksStateMachine;
+pub type Raft = openraft::Raft<TypeConfig>;
