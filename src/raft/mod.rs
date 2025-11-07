@@ -26,18 +26,44 @@ pub enum RequestOperation {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KVOperation {
-    Set { key: String, value: String },
-    Del { key: String },
+    Set {
+        key: String,
+        value: Vec<u8>,
+        return_previous: bool,
+    },
+    Del {
+        key: String,
+    },
+    Cas {
+        key: String,
+        expected_revision: u64,
+        value: Vec<u8>,
+        return_previous: bool,
+    },
 }
 
 impl fmt::Display for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let op_str = match &self.op {
-            RequestOperation::KV(KVOperation::Set { key, value, .. }) => {
-                format!("Set {{ key: {}, value: {} }}", key, value)
+            RequestOperation::KV(KVOperation::Set { key, value, return_previous }) => {
+                format!("Set {{ key: {}, value: Vec<u8>[{}], return_previous: {} }}", key, value.len(), return_previous)
             }
             RequestOperation::KV(KVOperation::Del { key }) => {
                 format!("Del {{ key: {} }}", key)
+            }
+            RequestOperation::KV(KVOperation::Cas {
+                key,
+                expected_revision,
+                value,
+                return_previous,
+            }) => {
+                format!(
+                    "Cas {{ key: {}, expected_revision: {}, value: Vec<u8>[{}], return_previous: {} }}",
+                    key,
+                    expected_revision,
+                    value.len(),
+                    return_previous
+                )
             }
         };
         write!(
@@ -91,9 +117,21 @@ pub enum ResponseResult {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SetResponse {
+    pub prev_value: Option<Vec<u8>>,
+    pub revision: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KVResponse {
-    Set { prev_value: Option<String> },
-    Del { existed: bool },
+    Set(SetResponse),
+    Del {
+        existed: bool,
+    },
+    Cas {
+        success: bool,
+        response: SetResponse,
+    },
 }
 
 openraft::declare_raft_types!(

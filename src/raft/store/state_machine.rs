@@ -26,7 +26,15 @@ use crate::raft::KVOperation;
 use crate::raft::KVResponse;
 use crate::raft::RequestOperation;
 use crate::raft::ResponseResult;
-use crate::raft::{Request, Response, TypeConfig};
+use crate::raft::SetResponse;
+use crate::raft::{Response, TypeConfig};
+
+/// Value stored in the state machine: (revision, data)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct StoredValue {
+    revision: u64,
+    data: Vec<u8>,
+}
 fn cf_sm_meta<'a>(db: &'a DB) -> &'a rocksdb::ColumnFamily {
     db.cf_handle("sm_meta").unwrap()
 }
@@ -62,17 +70,30 @@ impl RocksStateMachine {
     }
 
     /// Get a value from the state machine by key
-    pub async fn get(&self, key: &str) -> Result<Option<String>, io::Error> {
+    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, io::Error> {
+        self.get_with_revision(key)
+            .await
+            .map(|opt| opt.map(|(data, _)| data))
+    }
+
+    /// Get a value and its revision from the state machine by key
+    pub async fn get_with_revision(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>, io::Error> {
         let db = self.db.clone();
         let key = key.to_string();
 
         spawn_blocking(move || {
             let cf = cf_sm_data(&db);
-            db.get_cf(cf, key.as_bytes())
-                .map_err(|e| io::Error::other(e.to_string()))?
-                .map(|bytes| String::from_utf8(bytes.to_vec()))
-                .transpose()
-                .map_err(|e| io::Error::other(e.to_string()))
+            let stored = db
+                .get_cf(cf, key.as_bytes())
+                .map_err(|e| io::Error::other(e.to_string()))?;
+
+            match stored {
+                None => Ok(None),
+                Some(bytes) => {
+                    let stored_value = deserialize::<StoredValue>(&bytes)?;
+                    Ok(Some((stored_value.data, stored_value.revision)))
+                }
+            }
         })
         .await
         .map_err(|e| io::Error::other(e.to_string()))?
@@ -220,8 +241,9 @@ impl RaftStateMachine<TypeConfig> for RocksStateMachine {
         let mut responses = Vec::new();
 
         // Track pending state changes within this batch for correct read-your-writes semantics
-        // None = deleted, Some(value) = written
-        let mut pending_state: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>> = std::collections::HashMap::new();
+        // None = deleted, Some((value, revision)) = written
+        let mut pending_state: std::collections::HashMap<Vec<u8>, Option<(Vec<u8>, u64)>> =
+            std::collections::HashMap::new();
 
         for (entry, responder) in entries {
             tracing::debug!(%entry.log_id, "replicate to sm");
@@ -230,35 +252,73 @@ impl RaftStateMachine<TypeConfig> for RocksStateMachine {
 
             let response = match entry.payload {
                 EntryPayload::Blank => Response::Empty,
-                EntryPayload::Normal(ref req) => match &req.op {
-                    RequestOperation::KV(KVOperation::Set { key, value }) => {
+                EntryPayload::Normal(req) => match &req.op {
+                    RequestOperation::KV(KVOperation::Set { key, value, return_previous }) => {
                         let key_bytes = key.as_bytes().to_vec();
 
-                        // Check pending state first for read-your-writes semantics
-                        let prev_value = if let Some(pending) = pending_state.get(&key_bytes) {
-                            // Value is in pending state from earlier entry in this batch
-                            pending.as_ref()
-                                .map(|v| String::from_utf8(v.clone()))
-                                .transpose()
-                                .map_err(|e| io::Error::other(e.to_string()))?
+                        // Get current value and revision (only if return_previous is true)
+                        let (prev_value, current_revision) = if *return_previous {
+                            if let Some(pending) = pending_state.get(&key_bytes) {
+                                // Value is in pending state from earlier entry in this batch
+                                match pending {
+                                    Some((data, rev)) => (Some(data.clone()), *rev),
+                                    None => (None, 0),
+                                }
+                            } else {
+                                // Not in pending state, read from DB
+                                match self
+                                    .db
+                                    .get_cf(cf_data, &key_bytes)
+                                    .map_err(|e| io::Error::other(e.to_string()))?
+                                {
+                                    Some(bytes) => {
+                                        let stored = deserialize::<StoredValue>(&bytes)?;
+                                        (Some(stored.data), stored.revision)
+                                    }
+                                    None => (None, 0),
+                                }
+                            }
                         } else {
-                            // Not in pending state, read from DB
-                            self.db
-                                .get_cf(cf_data, &key_bytes)
-                                .map_err(|e| io::Error::other(e.to_string()))?
-                                .map(|bytes| String::from_utf8(bytes.to_vec()))
-                                .transpose()
-                                .map_err(|e| io::Error::other(e.to_string()))?
+                            // Only get revision, skip fetching the value
+                            let current_revision = if let Some(pending) = pending_state.get(&key_bytes) {
+                                match pending {
+                                    Some((_, rev)) => *rev,
+                                    None => 0,
+                                }
+                            } else {
+                                match self
+                                    .db
+                                    .get_cf(cf_data, &key_bytes)
+                                    .map_err(|e| io::Error::other(e.to_string()))?
+                                {
+                                    Some(bytes) => deserialize::<StoredValue>(&bytes)?.revision,
+                                    None => 0,
+                                }
+                            };
+                            (None, current_revision)
                         };
 
-                        // Track this write in pending state
-                        pending_state.insert(key_bytes.clone(), Some(value.as_bytes().to_vec()));
-                        batch.put_cf(cf_data, &key_bytes, value.as_bytes());
+                        // Increment revision
+                        let new_revision = current_revision + 1;
+
+                        // Store with new revision
+                        let stored_value = StoredValue {
+                            revision: new_revision,
+                            data: value.clone(),
+                        };
+                        let stored_bytes = serialize(&stored_value)?;
+
+                        batch.put_cf(cf_data, &key_bytes, &stored_bytes);
+                        pending_state
+                            .insert(key_bytes.clone(), Some((value.clone(), new_revision)));
 
                         Response::Result {
                             client_id: req.client_id,
                             seq_id: req.seq_id,
-                            res: ResponseResult::KV(KVResponse::Set { prev_value }),
+                            res: ResponseResult::KV(KVResponse::Set(SetResponse {
+                                prev_value,
+                                revision: new_revision,
+                            })),
                         }
                     }
                     RequestOperation::KV(KVOperation::Del { key }) => {
@@ -284,6 +344,98 @@ impl RaftStateMachine<TypeConfig> for RocksStateMachine {
                             client_id: req.client_id,
                             seq_id: req.seq_id,
                             res: ResponseResult::KV(KVResponse::Del { existed }),
+                        }
+                    }
+                    RequestOperation::KV(KVOperation::Cas {
+                        key,
+                        expected_revision,
+                        value,
+                        return_previous,
+                    }) => {
+                        let key_bytes = key.as_bytes().to_vec();
+
+                        // Get current value and revision (only if return_previous is true)
+                        let (prev_value, current_revision) = if *return_previous {
+                            if let Some(pending) = pending_state.get(&key_bytes) {
+                                // Value is in pending state from earlier entry in this batch
+                                match pending {
+                                    Some((data, rev)) => (Some(data.clone()), *rev),
+                                    None => (None, 0),
+                                }
+                            } else {
+                                // Not in pending state, read from DB
+                                match self
+                                    .db
+                                    .get_cf(cf_data, &key_bytes)
+                                    .map_err(|e| io::Error::other(e.to_string()))?
+                                {
+                                    Some(bytes) => {
+                                        let stored = deserialize::<StoredValue>(&bytes)?;
+                                        (Some(stored.data), stored.revision)
+                                    }
+                                    None => (None, 0),
+                                }
+                            }
+                        } else {
+                            // Only get revision, skip fetching the value
+                            let current_revision = if let Some(pending) = pending_state.get(&key_bytes) {
+                                match pending {
+                                    Some((_, rev)) => *rev,
+                                    None => 0,
+                                }
+                            } else {
+                                match self
+                                    .db
+                                    .get_cf(cf_data, &key_bytes)
+                                    .map_err(|e| io::Error::other(e.to_string()))?
+                                {
+                                    Some(bytes) => deserialize::<StoredValue>(&bytes)?.revision,
+                                    None => 0,
+                                }
+                            };
+                            (None, current_revision)
+                        };
+
+                        // Check if revision matches
+                        let success = current_revision == *expected_revision;
+
+                        if success {
+                            // CAS succeeds - increment revision and store new value
+                            let new_revision = current_revision + 1;
+                            let stored_value = StoredValue {
+                                revision: new_revision,
+                                data: value.clone(),
+                            };
+                            let stored_bytes = serialize(&stored_value)?;
+
+                            batch.put_cf(cf_data, &key_bytes, &stored_bytes);
+                            pending_state
+                                .insert(key_bytes.clone(), Some((value.clone(), new_revision)));
+
+                            Response::Result {
+                                client_id: req.client_id,
+                                seq_id: req.seq_id,
+                                res: ResponseResult::KV(KVResponse::Cas {
+                                    success: true,
+                                    response: SetResponse {
+                                        prev_value,
+                                        revision: new_revision,
+                                    },
+                                }),
+                            }
+                        } else {
+                            // CAS fails - return current revision
+                            Response::Result {
+                                client_id: req.client_id,
+                                seq_id: req.seq_id,
+                                res: ResponseResult::KV(KVResponse::Cas {
+                                    success: false,
+                                    response: SetResponse {
+                                        prev_value,
+                                        revision: current_revision,
+                                    },
+                                }),
+                            }
                         }
                     }
                 },

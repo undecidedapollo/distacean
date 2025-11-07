@@ -1,17 +1,37 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
-use clap::Parser;
-use distacean::{Distacean, DistaceanConfig};
+use clap::{Parser, Subcommand};
+use distacean::{ClusterDistaceanConfig, Distacean, NodeId};
 use tracing_subscriber::EnvFilter;
+
+use crate::utils::ephemeral_distacian_cluster;
+mod utils;
 
 struct AppState {
     distkv: distacean::DistKV,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ShortenRequest {
+    url: String,
+    hash: String,
 }
 
 async fn shorten(data: web::Data<AppState>, url: web::Json<String>) -> impl Responder {
     let hash = format!("{:x}", md5::compute(url.as_bytes()));
     let short = &hash[..6];
 
-    if let Err(e) = data.distkv.set(short.to_string(), url.to_string()).await {
+    if let Err(e) = data
+        .distkv
+        .set(
+            short,
+            ShortenRequest {
+                url: url.into_inner(),
+                hash: short.to_string(),
+            },
+        )
+        .execute()
+        .await
+    {
         return HttpResponse::InternalServerError()
             .body(format!("Failed to store URL in DistKV: {}", e));
     }
@@ -20,38 +40,57 @@ async fn shorten(data: web::Data<AppState>, url: web::Json<String>) -> impl Resp
 }
 
 async fn redirect(data: web::Data<AppState>, path: web::Path<String>) -> impl Responder {
-    let url = match data.distkv.eventual_read(path.into_inner()).await {
-        Ok(url) => url,
+    let url = match data
+        .distkv
+        .eventual_read::<ShortenRequest>(path.as_str())
+        .await
+    {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            return HttpResponse::InternalServerError().body(format!("Url not found in DistKV"));
+        }
         Err(e) => {
             return HttpResponse::InternalServerError()
                 .body(format!("Failed to retrieve URL from DistKV: {}", e));
         }
     };
 
-    if url.is_empty() {
-        return HttpResponse::NotFound().body("URL not found");
-    }
-
     HttpResponse::Found()
-        .append_header(("Location", url.as_str()))
+        .append_header(("Location", url.url.as_str()))
         .finish()
 }
 
-#[derive(Parser, Clone, Debug)]
-#[clap(author, version, about, long_about = None)]
-pub struct Opt {
-    #[clap(long)]
-    pub id: u64,
+#[derive(Parser, Debug)]
+#[command(name = "distacean", subcommand = "Ephemeral")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    #[clap(long)]
-    pub tcp_port: u16,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Start the server
+    Cluster {
+        #[arg(long)]
+        tcp_port: u16,
+        #[arg(long)]
+        node_id: NodeId,
+
+        #[arg(long)]
+        #[clap(default_value = "8000")]
+        http_port: u16,
+    },
+
+    Ephemeral {
+        #[arg(long)]
+        #[clap(default_value = "8000")]
+        http_port: u16,
+    },
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Parse the parameters passed by arguments.
-    let options = Opt::parse();
-
+    let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_target(true)
         .with_thread_ids(false)
@@ -61,22 +100,30 @@ async fn main() -> std::io::Result<()> {
         .fmt_fields(tracing_subscriber::fmt::format::DefaultFields::new())
         .init();
 
-    tracing::info!("Starting node {} on {}", options.id, options.tcp_port);
-
-    let distacean = Distacean::init(DistaceanConfig {
-        node_id: options.id,
-        tcp_port: options.tcp_port,
-        nodes: vec![
-            (1, "127.0.0.1:22001".to_owned()),
-            // (2, "127.0.0.1:22002".to_owned()),
-            // (3, "127.0.0.1:22003".to_owned()),
-        ],
-    })
-    .await
-    .map_err(|e| {
-        eprintln!("Failed to initialize Distacean: {}", e);
-        std::io::Error::new(std::io::ErrorKind::Other, "Distacean initialization failed")
-    })?;
+    let (distacean, http_port) = match cli.command {
+        Commands::Cluster {
+            tcp_port,
+            node_id,
+            http_port,
+        } => (
+            Distacean::init(ClusterDistaceanConfig {
+                node_id,
+                tcp_port,
+                nodes: vec![
+                    (1, "127.0.0.1:22001".to_string()),
+                    (2, "127.0.0.1:22002".to_string()),
+                    (3, "127.0.0.1:22003".to_string()),
+                ],
+            })
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to initialize Distacean: {}", e);
+                std::io::Error::new(std::io::ErrorKind::Other, "Distacean initialization failed")
+            })?,
+            http_port,
+        ),
+        Commands::Ephemeral { http_port } => (ephemeral_distacian_cluster().await?, http_port),
+    };
 
     // Sleep for a second to warm up
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -84,7 +131,7 @@ async fn main() -> std::io::Result<()> {
     let kv = distacean.kv_store();
     let app_state = web::Data::new(AppState { distkv: kv });
 
-    println!("Starting URL shortener at http://localhost:8080");
+    println!("Starting URL shortener at http://localhost:{http_port}");
 
     HttpServer::new(move || {
         App::new()
@@ -92,7 +139,7 @@ async fn main() -> std::io::Result<()> {
             .route("/shorten", web::post().to(shorten))
             .route("/l/{hash}", web::get().to(redirect))
     })
-    .bind("127.0.0.1:8080")?
+    .bind(format!("127.0.0.1:{http_port}"))?
     .run()
     .await
 }

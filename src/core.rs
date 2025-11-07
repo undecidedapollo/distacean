@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use maplit::hashmap;
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::error::decompose::DecomposeResult;
-use thiserror::Error;
+// use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
@@ -21,17 +22,32 @@ use crate::raft::TypeConfig;
 use crate::raft::{NodeId, Raft, Request, Response};
 use crate::router::route_peer_connection_messages;
 
-#[derive(Error, Debug)]
-pub enum DistaceanSetupError {
-    #[error("unknown setup error")]
-    Unknown,
+// #[derive(Error, Debug)]
+// pub enum DistaceanSetupError {
+//     #[error("unknown setup error")]
+//     Unknown,
+// }
+
+pub struct SingleNodeDistaceanConfig {
+    pub node_id: NodeId,
 }
 
-pub struct DistaceanConfig {
+pub struct ClusterDistaceanConfig {
     pub node_id: NodeId,
     pub tcp_port: u16,
     pub nodes: Vec<(NodeId, String)>,
 }
+
+// pub enum DistaceanSetupConfig {
+//     SingleNode(SingleNodeDistaceanConfig),
+//     Cluster(ClusterDistaceanConfig),
+// }
+
+// pub struct DistaceanConfig {
+//     pub node_id: NodeId,
+//     pub tcp_port: u16,
+//     pub nodes: Vec<(NodeId, String)>,
+// }
 
 pub struct DistaceanCore {
     node_id: NodeId,
@@ -48,7 +64,7 @@ pub struct Distacean {
 
 impl Distacean {
     pub async fn init(
-        opts: DistaceanConfig,
+        opts: ClusterDistaceanConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config = Config {
             heartbeat_interval: 500,
@@ -112,6 +128,68 @@ impl Distacean {
             for (id, addr) in opts.nodes.into_iter() {
                 nodes.insert(id, BasicNode { addr });
             }
+            // User provided nodes for initialization
+            raft.initialize(nodes).await.unwrap();
+        } else {
+            // Already initialized, skip
+            tracing::info!("Cluster already initialized, skipping init");
+        }
+
+        Ok(Self {
+            core: Arc::new(DistaceanCore {
+                node_id: opts.node_id,
+                raft,
+                peer_manager,
+                state_machine_store,
+                request_seq_id: std::sync::atomic::AtomicU64::new(1),
+            }),
+        })
+    }
+
+    pub async fn init_single_node_cluster(
+        opts: SingleNodeDistaceanConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let config = Config {
+            heartbeat_interval: 500,
+            election_timeout_min: 1500,
+            election_timeout_max: 3000,
+            ..Default::default()
+        };
+
+        let config = Arc::new(config.validate().unwrap());
+        let dir = format!("./rocks/node-{}", opts.node_id);
+        let (log_store, state_machine_store) =
+            crate::raft::store::create_rocks_stores(&dir).await.unwrap();
+        let is_initialized = {
+            let (_, membership) = state_machine_store
+                .get_meta()
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+            !membership.membership().nodes().into_iter().next().is_none()
+        };
+
+        let peer_manager: Arc<PeerManager<TcpStream, TcpStreamStarter>> =
+            PeerManager::new(1, TcpStreamStarter {});
+
+        let network = RaftPeerManager::new(peer_manager.clone());
+
+        // Create a local raft instance.
+        let raft = openraft::Raft::new(
+            opts.node_id,
+            config.clone(),
+            network,
+            log_store.clone(),
+            state_machine_store.clone(),
+        )
+        .await
+        .unwrap();
+
+        if !is_initialized {
+            let nodes = hashmap! {
+                opts.node_id => BasicNode {
+                    addr: format!("local:{}", opts.node_id),
+                }
+            };
             // User provided nodes for initialization
             raft.initialize(nodes).await.unwrap();
         } else {

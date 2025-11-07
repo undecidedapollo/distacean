@@ -1,14 +1,21 @@
+pub mod operator_set;
+
 use std::sync::Arc;
 
 use crate::core::DistaceanCore;
 use crate::core::LeaderResponse;
+use crate::distkv::operator_set::SetRequest;
+use crate::distkv::operator_set::SetRequestBuilder;
 use crate::protocol::LinearizerData;
 use crate::protocol::RequestType;
 use crate::raft::KVOperation;
-use crate::raft::Request;
 use crate::raft::RequestOperation;
 use openraft::error::decompose::DecomposeResult;
 use openraft::raft::linearizable_read::Linearizer;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+pub use self::operator_set::SetError;
 
 pub(crate) struct DistKVCore {
     pub(crate) distacean: Arc<DistaceanCore>,
@@ -19,47 +26,56 @@ pub struct DistKV {
     pub(crate) core: Arc<DistKVCore>,
 }
 
+pub type InitialSetBuilder =
+    SetRequestBuilder<operator_set::SetValue<operator_set::SetKey<operator_set::SetDistacean>>>;
+
 impl DistKVCore {}
 
 impl DistKV {
-    pub async fn set(
+    pub fn set<T: Serialize, V: std::borrow::Borrow<T>>(
         self: &DistKV,
-        key: String,
-        value: String,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.core
-            .distacean
-            .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Set {
-                key: key.clone(),
-                value: value.clone(),
-            }))
-            .await?;
-        Ok(())
+        key: impl Into<String>,
+        value: V,
+    ) -> InitialSetBuilder {
+        SetRequest::builder()
+            .distacean(self.core.distacean.clone())
+            .key(key.into())
+            .value(rmp_serde::to_vec(value.borrow()).expect("Failed to serialize value"))
     }
 
     pub async fn delete(
         self: &DistKV,
-        key: String,
+        key: impl Into<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.core
             .distacean
-            .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Del { key: key.clone() }))
+            .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Del { key: key.into() }))
             .await?;
         Ok(())
     }
 
-    pub async fn eventual_read(
+    pub async fn eventual_read<T: DeserializeOwned>(
         self: &DistKV,
-        key: String,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        key: impl Into<String>,
+    ) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>> {
+        let key = key.into();
         let value = self.core.distacean.state_machine_store.get(&key).await?;
-        Ok(value.unwrap_or_default())
+        Ok(if let Some(value) = value {
+            if value.is_empty() {
+                None
+            } else {
+                Some(rmp_serde::from_slice(&value)?)
+            }
+        } else {
+            None
+        })
     }
 
-    pub async fn read(
+    pub async fn read<T: DeserializeOwned>(
         self: &DistKV,
-        key: String,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        key: impl Into<String>,
+    ) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>> {
+        let key = key.into();
         let leader = self.core.distacean.get_leader_peer().await?;
 
         match leader {
@@ -86,7 +102,11 @@ impl DistKV {
                     .await?
                     .unwrap_or_default();
 
-                Ok(value)
+                Ok(if value.is_empty() {
+                    None
+                } else {
+                    Some(rmp_serde::from_slice(&value)?)
+                })
             }
             LeaderResponse::NodeIsFollower(leader_peer) => {
                 let data = rmp_serde::to_vec(&RequestType::Linearizer)?;
@@ -113,9 +133,36 @@ impl DistKV {
                     .get(&key)
                     .await?
                     .unwrap_or_default();
-                Ok(value)
+                Ok(if value.is_empty() {
+                    None
+                } else {
+                    Some(rmp_serde::from_slice(&value)?)
+                })
             }
             LeaderResponse::NoLeader => Err("No leader available".to_string().into()),
         }
+    }
+
+    pub async fn get_with_revision<T: DeserializeOwned>(
+        self: &DistKV,
+        key: impl Into<String>,
+    ) -> Result<Option<(T, u64)>, Box<dyn std::error::Error + Send + Sync>> {
+        let key = key.into();
+        let result = self
+            .core
+            .distacean
+            .state_machine_store
+            .get_with_revision(&key)
+            .await?;
+
+        Ok(if let Some((value, revision)) = result {
+            if value.is_empty() {
+                None
+            } else {
+                Some((rmp_serde::from_slice(&value)?, revision))
+            }
+        } else {
+            None
+        })
     }
 }
