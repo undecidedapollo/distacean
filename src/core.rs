@@ -67,7 +67,7 @@ impl Distacean {
         opts: ClusterDistaceanConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config = Config {
-            heartbeat_interval: 500,
+            heartbeat_interval: 1000,
             election_timeout_min: 1500,
             election_timeout_max: 3000,
             ..Default::default()

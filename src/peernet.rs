@@ -379,15 +379,21 @@ where
                             }
                             Ok(Message::Req { req_id, payload }) => {
                                 println!(
-                                    "[{}] [< {}] Received request {}: {:?}",
-                                    local_port, peer_port, req_id, payload
+                                    "[{}] [< {}] Received request {}: {} bytes",
+                                    local_port,
+                                    peer_port,
+                                    req_id,
+                                    payload.len()
                                 );
                                 let _ = read_channel.send(RecvMessage::Req { req_id, payload });
                             }
                             Ok(Message::Res { res_id, payload }) => {
                                 println!(
-                                    "[{}] [< {}] Received response {}: {:?}",
-                                    local_port, peer_port, res_id, payload
+                                    "[{}] [< {}] Received response {}: {} bytes",
+                                    local_port,
+                                    peer_port,
+                                    res_id,
+                                    payload.len()
                                 );
                                 let _ = read_channel.send(RecvMessage::Res { res_id, payload });
                             }

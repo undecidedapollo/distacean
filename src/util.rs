@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub(crate) struct AutoAbort<T>(Option<tokio::task::JoinHandle<T>>);
 
 impl<T> Drop for AutoAbort<T> {
