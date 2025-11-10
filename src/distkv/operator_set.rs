@@ -3,7 +3,10 @@ use std::sync::Arc;
 use self::set_request_builder::State;
 use crate::core::DistaceanCore;
 use crate::raft::KVOperation;
+use crate::raft::KVResponse;
 use crate::raft::RequestOperation;
+use crate::raft::Response;
+use crate::raft::ResponseResult;
 use crate::raft::SetResponse;
 use bon::Builder;
 
@@ -52,28 +55,28 @@ impl SetRequest {
                 .map_err(|e| SetError::Other(e))?
         };
 
+        if let Response::Empty = response {
+            return Err(SetError::Other("Unexpected response type".into()));
+        }
+
+        let res = match response {
+            Response::Empty => {
+                return Err(SetError::Other("Unexpected response type".into()));
+            }
+            Response::Result { res, .. } => res,
+        };
+
         // Extract SetResponse from response
-        match response {
-            crate::raft::Response::Result {
-                res: crate::raft::ResponseResult::KV(crate::raft::KVResponse::Set(set_response)),
-                ..
-            } => Ok(set_response),
-            crate::raft::Response::Result {
-                res:
-                    crate::raft::ResponseResult::KV(crate::raft::KVResponse::Cas {
-                        success: true,
-                        response,
-                    }),
-                ..
-            } => Ok(response),
-            crate::raft::Response::Result {
-                res:
-                    crate::raft::ResponseResult::KV(crate::raft::KVResponse::Cas {
-                        success: false,
-                        response,
-                    }),
-                ..
-            } => Err(SetError::RevisionMismatch {
+        match res {
+            ResponseResult::KV(KVResponse::Set(set_response)) => Ok(set_response),
+            ResponseResult::KV(KVResponse::Cas {
+                success: true,
+                response,
+            }) => Ok(response),
+            ResponseResult::KV(KVResponse::Cas {
+                success: false,
+                response,
+            }) => Err(SetError::RevisionMismatch {
                 current_revision: response.revision,
             }),
             _ => Err(SetError::Other("Unexpected response type".into())),

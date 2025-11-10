@@ -81,9 +81,9 @@ pub fn route_peer_connection_messages(
                                 .await
                                 .unwrap();
                         }
-                        RequestType::Linearizer => {
+                        RequestType::Linearizer { read_policy } => {
                             let linearizer = raft
-                                .get_read_linearizer(ReadPolicy::ReadIndex)
+                                .get_read_linearizer(read_policy.into())
                                 .await
                                 .decompose()
                                 .unwrap();

@@ -4,6 +4,8 @@ use maplit::hashmap;
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::error::decompose::DecomposeResult;
+use openraft::raft::linearizable_read::LinearizeState;
+use openraft::raft::linearizable_read::Linearizer;
 // use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -15,6 +17,8 @@ use crate::network_tcp::TcpStreamStarter;
 use crate::peernet::PeerConnection;
 use crate::peernet::PeerManager;
 use crate::peernet::StartableStream;
+use crate::protocol::LinearizerData;
+use crate::protocol::ReadPolicy;
 use crate::protocol::RequestType;
 use crate::raft::RequestOperation;
 use crate::raft::StateMachineStore;
@@ -223,6 +227,12 @@ pub enum LeaderResponse {
     NoLeader,
 }
 
+#[derive(Clone, Copy)]
+pub enum ReadSource {
+    Local,
+    Leader,
+}
+
 impl DistaceanCore {
     #[allow(dead_code)]
     pub(crate) fn raft(&self) -> Raft {
@@ -305,6 +315,59 @@ impl DistaceanCore {
             }
             LeaderResponse::NoLeader => Err("No leader available".into()),
         }
+    }
+
+    pub(crate) async fn get_linearizer(
+        &self,
+        read_source: ReadSource,
+        read_policy: ReadPolicy,
+    ) -> Result<LinearizeState<TypeConfig>, Box<dyn std::error::Error + Send + Sync>> {
+        let linearizer = match read_source {
+            ReadSource::Local => {
+                let linearizer = self
+                    .raft
+                    .get_read_linearizer(read_policy.into())
+                    .await
+                    .decompose()
+                    .unwrap()?;
+                linearizer
+            }
+            ReadSource::Leader => {
+                let leader = self.get_leader_peer().await?;
+
+                match leader {
+                    LeaderResponse::NodeIsLeader => {
+                        // Get linearizer from local raft
+                        let linearizer = self
+                            .raft
+                            .get_read_linearizer(read_policy.into())
+                            .await
+                            .decompose()
+                            .unwrap()?;
+                        linearizer
+                    }
+                    LeaderResponse::NodeIsFollower(leader_peer) => {
+                        let data = rmp_serde::to_vec(&RequestType::Linearizer { read_policy })?;
+                        let res = leader_peer.req_res(data).await?;
+                        let linearizer_data: Result<LinearizerData, String> =
+                            rmp_serde::from_slice(&res)?;
+                        let linearizer_data = linearizer_data?;
+
+                        Linearizer::new(
+                            linearizer_data.node_id,
+                            linearizer_data.read_log_id,
+                            linearizer_data.applied,
+                        )
+                    }
+                    LeaderResponse::NoLeader => {
+                        return Err("No leader available".to_string().into());
+                    }
+                }
+            }
+        };
+
+        let data = linearizer.await_ready(&self.raft).await?;
+        Ok(data)
     }
 }
 

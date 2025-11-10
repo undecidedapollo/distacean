@@ -1,0 +1,6 @@
+[meta]
+cluster-name = "shorturl"
+
+[cluster.1]
+
+# Each node might be a caller, follower, voter, or leader, and you may not want to be certain ones or enforce certain constraints.

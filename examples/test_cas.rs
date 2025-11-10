@@ -1,3 +1,4 @@
+use distacean::{ReadConsistency, ReadSource};
 use tracing_subscriber::EnvFilter;
 
 use crate::utils::ephemeral_distacian_cluster;
@@ -41,7 +42,10 @@ async fn main() -> std::io::Result<()> {
     // Test 2: Get with revision
     println!("2. Getting value with revision");
     let (value, revision): (TestValue, _) = kv
-        .get_with_revision("counter")
+        .read("counter")
+        .leader()
+        .linearizable()
+        .execute_with_revision()
         .await
         .expect("Failed to get")
         .expect("Value not found");
@@ -95,7 +99,10 @@ async fn main() -> std::io::Result<()> {
     // Test 5: Verify value wasn't changed
     println!("5. Verifying value after failed CAS");
     let (value, revision): (TestValue, u64) = kv
-        .get_with_revision("counter")
+        .read("counter")
+        .leader()
+        .linearizable()
+        .execute_with_revision()
         .await
         .expect("Failed to get")
         .expect("Value not found");
@@ -107,7 +114,10 @@ async fn main() -> std::io::Result<()> {
     let mut current_revision = revision;
     for i in 2..=6 {
         let (current_value, _): (TestValue, u64) = kv
-            .get_with_revision("counter")
+            .read("counter")
+            .leader()
+            .linearizable()
+            .execute_with_revision()
             .await
             .expect("Failed to get")
             .expect("Value not found");
@@ -139,7 +149,10 @@ async fn main() -> std::io::Result<()> {
 
     println!("\n7. Final value check");
     let (final_value, final_revision): (TestValue, u64) = kv
-        .get_with_revision("counter")
+        .read("counter")
+        .leader()
+        .linearizable()
+        .execute_with_revision()
         .await
         .expect("Failed to get")
         .expect("Value not found");

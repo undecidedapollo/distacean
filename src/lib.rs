@@ -7,6 +7,9 @@ mod raft;
 mod router;
 mod util;
 
-pub use crate::core::{ClusterDistaceanConfig, Distacean, SingleNodeDistaceanConfig};
-pub use crate::distkv::{DistKV, SetError};
+pub use crate::core::{ClusterDistaceanConfig, Distacean, ReadSource, SingleNodeDistaceanConfig};
+pub use crate::distkv::{
+    DistKV, SetError,
+    operator_read::{KVReadError, ReadConsistency},
+};
 pub use crate::raft::{NodeId, SetResponse};

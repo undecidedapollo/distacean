@@ -1,6 +1,6 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use clap::{Parser, Subcommand};
-use distacean::{ClusterDistaceanConfig, Distacean, NodeId};
+use distacean::{ClusterDistaceanConfig, Distacean, NodeId, ReadConsistency, ReadSource};
 use tracing_subscriber::EnvFilter;
 
 use crate::utils::ephemeral_distacian_cluster;
@@ -40,9 +40,12 @@ async fn shorten(data: web::Data<AppState>, url: web::Json<String>) -> impl Resp
 }
 
 async fn redirect(data: web::Data<AppState>, path: web::Path<String>) -> impl Responder {
-    let url = match data
+    let url: ShortenRequest = match data
         .distkv
-        .eventual_read::<ShortenRequest>(path.as_str())
+        .read(path.as_str())
+        .consistency(ReadConsistency::AsIs)
+        .source(ReadSource::Local)
+        .execute()
         .await
     {
         Ok(Some(url)) => url,
