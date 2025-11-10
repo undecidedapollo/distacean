@@ -12,8 +12,3 @@ Discoverability / Initialization
 
 
 
-
-KV multiple types
-Standardized Read Options?
-
-
