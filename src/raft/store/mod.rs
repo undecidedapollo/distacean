@@ -1,3 +1,4 @@
+pub mod kv;
 mod log_store;
 mod state_machine;
 

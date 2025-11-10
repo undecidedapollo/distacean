@@ -8,6 +8,8 @@ use crate::raft::RequestOperation;
 use crate::raft::Response;
 use crate::raft::ResponseResult;
 use crate::raft::SetResponse;
+use crate::raft::store::kv::KVCas;
+use crate::raft::store::kv::KVSet;
 use bon::Builder;
 
 pub use self::set_request_builder::{SetDistacean, SetKey, SetReturnPrevious, SetValue};
@@ -35,22 +37,22 @@ impl SetRequest {
         let response = if let Some(expected_revision) = expected_revision {
             // CAS operation
             distacean
-                .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Cas {
+                .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Cas(KVCas {
                     key,
                     expected_revision,
                     value,
                     return_previous,
-                }))
+                })))
                 .await
                 .map_err(|e| SetError::Other(e))?
         } else {
             // Set operation
             distacean
-                .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Set {
+                .write_or_forward_to_leader(RequestOperation::KV(KVOperation::Set(KVSet {
                     key,
                     value,
                     return_previous,
-                }))
+                })))
                 .await
                 .map_err(|e| SetError::Other(e))?
         };

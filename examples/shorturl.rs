@@ -43,8 +43,8 @@ async fn redirect(data: web::Data<AppState>, path: web::Path<String>) -> impl Re
     let url: ShortenRequest = match data
         .distkv
         .read(path.as_str())
-        .consistency(ReadConsistency::AsIs)
-        .source(ReadSource::Local)
+        .local()
+        .as_is()
         .execute()
         .await
     {

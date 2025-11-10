@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub mod store;
+pub use store::kv::KVOperation;
 
 pub type NodeId = u64;
 
@@ -22,54 +23,29 @@ pub struct Request {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RequestOperation {
     KV(KVOperation),
+    // FIFO(FIFOOperation),
+}
+
+impl fmt::Display for RequestOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            RequestOperation::KV(kv_op) => write!(f, "{}", kv_op),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum KVOperation {
-    Set {
-        key: String,
-        value: Vec<u8>,
-        return_previous: bool,
-    },
-    Del {
-        key: String,
-    },
-    Cas {
-        key: String,
-        expected_revision: u64,
-        value: Vec<u8>,
-        return_previous: bool,
-    },
+pub enum FIFOOperation {
+    Enqueue { values: Vec<u8> },
+    Dequeue { count: usize },
 }
 
 impl fmt::Display for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let op_str = match &self.op {
-            RequestOperation::KV(KVOperation::Set { key, value, return_previous }) => {
-                format!("Set {{ key: {}, value: Vec<u8>[{}], return_previous: {} }}", key, value.len(), return_previous)
-            }
-            RequestOperation::KV(KVOperation::Del { key }) => {
-                format!("Del {{ key: {} }}", key)
-            }
-            RequestOperation::KV(KVOperation::Cas {
-                key,
-                expected_revision,
-                value,
-                return_previous,
-            }) => {
-                format!(
-                    "Cas {{ key: {}, expected_revision: {}, value: Vec<u8>[{}], return_previous: {} }}",
-                    key,
-                    expected_revision,
-                    value.len(),
-                    return_previous
-                )
-            }
-        };
         write!(
             f,
             "Request {{ client_id: {}, seq_id: {:?}, op: {} }}",
-            self.client_id, self.seq_id, op_str
+            self.client_id, self.seq_id, self.op
         )
     }
 }
